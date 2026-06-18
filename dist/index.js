@@ -82,10 +82,16 @@ var PredicateQuantifier;
     PredicateQuantifier["EVERY"] = "every";
     /**
      * When choosing 'some' in the config it means that files will get matched as long as there is
-     * at least one pattern that matches them. This is the default behavior if you don't
-     * specify anything as a predicate quantifier.
+     * at least one pattern that matches them.
      */
     PredicateQuantifier["SOME"] = "some";
+    /**
+     * Like 'some', but patterns prefixed with '!' are treated as hard deny rules: if a file matches
+     * any deny pattern (the glob after stripping '!'), it is excluded regardless of other matches.
+     * If a rule contains only deny patterns and no positive patterns, any non-denied file matches
+     * (implicit match-all). This is the default mode.
+     */
+    PredicateQuantifier["SOME_DENY_FIRST"] = "some-deny-first";
 })(PredicateQuantifier || (exports.PredicateQuantifier = PredicateQuantifier = {}));
 /**
  * An array of strings (at runtime) that contains the valid/accepted values for
@@ -126,36 +132,46 @@ class Filter {
         return result;
     }
     isMatch(file, patterns) {
-        var _a;
-        const aPredicate = (rule) => {
-            return (rule.status === undefined || rule.status.includes(file.status)) && rule.isMatch(file.filename);
-        };
-        if (((_a = this.filterConfig) === null || _a === void 0 ? void 0 : _a.predicateQuantifier) === 'every') {
-            return patterns.every(aPredicate);
+        var _a, _b;
+        const fileMatchesRule = (rule) => (rule.status === undefined || rule.status.includes(file.status)) && rule.isMatch(file.filename);
+        const mode = (_b = (_a = this.filterConfig) === null || _a === void 0 ? void 0 : _a.predicateQuantifier) !== null && _b !== void 0 ? _b : PredicateQuantifier.SOME_DENY_FIRST;
+        if (mode === PredicateQuantifier.SOME_DENY_FIRST) {
+            if (patterns.filter(r => r.negate).some(fileMatchesRule))
+                return false;
+            const positives = patterns.filter(r => !r.negate);
+            return positives.length === 0 || positives.some(fileMatchesRule);
         }
-        else {
-            return patterns.some(aPredicate);
+        if (mode === PredicateQuantifier.EVERY) {
+            return patterns.every(fileMatchesRule);
         }
+        return patterns.some(fileMatchesRule);
     }
     parseFilterItemYaml(item) {
+        var _a, _b;
         if (Array.isArray(item)) {
             return flat(item.map(i => this.parseFilterItemYaml(i)));
         }
+        const isDenyFirst = ((_b = (_a = this.filterConfig) === null || _a === void 0 ? void 0 : _a.predicateQuantifier) !== null && _b !== void 0 ? _b : PredicateQuantifier.SOME_DENY_FIRST) === PredicateQuantifier.SOME_DENY_FIRST;
         if (typeof item === 'string') {
-            return [{ status: undefined, isMatch: (0, picomatch_1.default)(item, MatchOptions) }];
+            const negate = isDenyFirst && item.startsWith('!');
+            const pattern = negate ? item.slice(1) : item;
+            return [{ status: undefined, isMatch: (0, picomatch_1.default)(pattern, MatchOptions), negate }];
         }
         if (typeof item === 'object') {
             return Object.entries(item).map(([key, pattern]) => {
                 if (typeof key !== 'string' || (typeof pattern !== 'string' && !Array.isArray(pattern))) {
                     this.throwInvalidFormatError(`Expected [key:string]= pattern:string | string[], but [${key}:${typeof key}]= ${pattern}:${typeof pattern} found`);
                 }
+                const negate = isDenyFirst && typeof pattern === 'string' && pattern.startsWith('!');
+                const actualPattern = negate ? pattern.slice(1) : pattern;
                 return {
                     status: key
                         .split('|')
                         .map(x => x.trim())
                         .filter(x => x.length > 0)
                         .map(x => x.toLowerCase()),
-                    isMatch: (0, picomatch_1.default)(pattern, MatchOptions)
+                    isMatch: (0, picomatch_1.default)(actualPattern, MatchOptions),
+                    negate
                 };
             });
         }
@@ -574,7 +590,7 @@ async function run() {
         const filtersYaml = isPathInput(filtersInput) ? getConfigFileContent(filtersInput) : filtersInput;
         const listFiles = core.getInput('list-files', { required: false }).toLowerCase() || 'none';
         const initialFetchDepth = parseInt(core.getInput('initial-fetch-depth', { required: false })) || 10;
-        const predicateQuantifier = core.getInput('predicate-quantifier', { required: false }) || filter_1.PredicateQuantifier.SOME;
+        const predicateQuantifier = core.getInput('predicate-quantifier', { required: false }) || filter_1.PredicateQuantifier.SOME_DENY_FIRST;
         if (!isExportFormat(listFiles)) {
             core.setFailed(`Input parameter 'list-files' is set to invalid value '${listFiles}'`);
             return;
