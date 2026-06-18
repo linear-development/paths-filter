@@ -21,6 +21,7 @@ const MatchOptions = {
 interface FilterRuleItem {
   status?: ChangeStatus[] // Required change status of the matched files
   isMatch: (str: string) => boolean // Matches the filename
+  negate: boolean // In some-deny-first mode: if true, a match denies the file rather than including it
 }
 
 /**
@@ -44,10 +45,16 @@ export enum PredicateQuantifier {
   EVERY = 'every',
   /**
    * When choosing 'some' in the config it means that files will get matched as long as there is
-   * at least one pattern that matches them. This is the default behavior if you don't
-   * specify anything as a predicate quantifier.
+   * at least one pattern that matches them.
    */
-  SOME = 'some'
+  SOME = 'some',
+  /**
+   * Like 'some', but patterns prefixed with '!' are treated as hard deny rules: if a file matches
+   * any deny pattern (the glob after stripping '!'), it is excluded regardless of other matches.
+   * If a rule contains only deny patterns and no positive patterns, any non-denied file matches
+   * (implicit match-all). This is the default mode.
+   */
+  SOME_DENY_FIRST = 'some-deny-first'
 }
 
 /**
@@ -104,14 +111,21 @@ export class Filter {
   }
 
   private isMatch(file: File, patterns: FilterRuleItem[]): boolean {
-    const aPredicate = (rule: Readonly<FilterRuleItem>): boolean => {
-      return (rule.status === undefined || rule.status.includes(file.status)) && rule.isMatch(file.filename)
+    const fileMatchesRule = (rule: Readonly<FilterRuleItem>): boolean =>
+      (rule.status === undefined || rule.status.includes(file.status)) && rule.isMatch(file.filename)
+
+    const mode = this.filterConfig?.predicateQuantifier ?? PredicateQuantifier.SOME_DENY_FIRST
+
+    if (mode === PredicateQuantifier.SOME_DENY_FIRST) {
+      if (patterns.filter(r => r.negate).some(fileMatchesRule)) return false
+      const positives = patterns.filter(r => !r.negate)
+      return positives.length === 0 || positives.some(fileMatchesRule)
     }
-    if (this.filterConfig?.predicateQuantifier === 'every') {
-      return patterns.every(aPredicate)
-    } else {
-      return patterns.some(aPredicate)
+
+    if (mode === PredicateQuantifier.EVERY) {
+      return patterns.every(fileMatchesRule)
     }
+    return patterns.some(fileMatchesRule)
   }
 
   private parseFilterItemYaml(item: FilterItemYaml): FilterRuleItem[] {
@@ -119,8 +133,12 @@ export class Filter {
       return flat(item.map(i => this.parseFilterItemYaml(i)))
     }
 
+    const isDenyFirst = (this.filterConfig?.predicateQuantifier ?? PredicateQuantifier.SOME_DENY_FIRST) === PredicateQuantifier.SOME_DENY_FIRST
+
     if (typeof item === 'string') {
-      return [{status: undefined, isMatch: picomatch(item, MatchOptions)}]
+      const negate = isDenyFirst && item.startsWith('!')
+      const pattern = negate ? item.slice(1) : item
+      return [{status: undefined, isMatch: picomatch(pattern, MatchOptions), negate}]
     }
 
     if (typeof item === 'object') {
@@ -130,13 +148,16 @@ export class Filter {
             `Expected [key:string]= pattern:string | string[], but [${key}:${typeof key}]= ${pattern}:${typeof pattern} found`
           )
         }
+        const negate = isDenyFirst && typeof pattern === 'string' && pattern.startsWith('!')
+        const actualPattern = negate ? (pattern as string).slice(1) : pattern
         return {
           status: key
             .split('|')
             .map(x => x.trim())
             .filter(x => x.length > 0)
             .map(x => x.toLowerCase()) as ChangeStatus[],
-          isMatch: picomatch(pattern, MatchOptions)
+          isMatch: picomatch(actualPattern, MatchOptions),
+          negate
         }
       })
     }

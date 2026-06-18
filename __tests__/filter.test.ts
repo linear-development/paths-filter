@@ -212,6 +212,71 @@ describe('matching specific change status', () => {
   })
 })
 
+describe('some-deny-first mode', () => {
+  const denyFirstConfig: FilterConfig = {predicateQuantifier: PredicateQuantifier.SOME_DENY_FIRST}
+
+  test('deny rule excludes file even when a positive rule also matches', () => {
+    const yaml = `
+    backend:
+      - src/**
+      - '!src/generated/**'
+    `
+    const filter = new Filter(yaml, denyFirstConfig)
+    const generated = modified(['src/generated/foo.ts'])
+    const regular = modified(['src/app/foo.ts'])
+    expect(filter.match(generated).backend).toEqual([])
+    expect(filter.match(regular).backend).toEqual(regular)
+  })
+
+  test('deny-only rule: non-denied files match via implicit match-all', () => {
+    const yaml = `
+    backend:
+      - '!**/*.tsx'
+      - '!**/*.less'
+    `
+    const filter = new Filter(yaml, denyFirstConfig)
+    expect(filter.match(modified(['src/ui.tsx'])).backend).toEqual([])
+    expect(filter.match(modified(['src/ui.less'])).backend).toEqual([])
+    expect(filter.match(modified(['src/server.py'])).backend).toEqual(modified(['src/server.py']))
+  })
+
+  test('is the default mode when no predicate-quantifier is specified', () => {
+    const yaml = `
+    backend:
+      - src/**
+      - '!src/generated/**'
+    `
+    const filter = new Filter(yaml)
+    expect(filter.match(modified(['src/generated/foo.ts'])).backend).toEqual([])
+    expect(filter.match(modified(['src/app/foo.ts'])).backend).toEqual(modified(['src/app/foo.ts']))
+  })
+
+  test('deny rule with status key excludes matching file of that status', () => {
+    const yaml = `
+    backend:
+      - src/**
+      - added: '!src/generated/**'
+    `
+    const filter = new Filter(yaml, denyFirstConfig)
+    const addedGenerated = [{status: ChangeStatus.Added, filename: 'src/generated/foo.ts'}]
+    const modifiedGenerated = modified(['src/generated/foo.ts'])
+    // added file in generated/ is denied by the status-scoped deny rule
+    expect(filter.match(addedGenerated).backend).toEqual([])
+    // modified file in generated/ is NOT denied (deny rule only covers 'added')
+    expect(filter.match(modifiedGenerated).backend).toEqual(modifiedGenerated)
+  })
+
+  test('positive patterns with no matching file do not match', () => {
+    const yaml = `
+    backend:
+      - src/**
+      - '!src/generated/**'
+    `
+    const filter = new Filter(yaml, denyFirstConfig)
+    expect(filter.match(modified(['test/foo.ts'])).backend).toEqual([])
+  })
+})
+
 function modified(paths: string[]): File[] {
   return paths.map(filename => {
     return {filename, status: ChangeStatus.Modified}

@@ -33,7 +33,7 @@ async function run(): Promise<void> {
     const filtersYaml = isPathInput(filtersInput) ? getConfigFileContent(filtersInput) : filtersInput
     const listFiles = core.getInput('list-files', {required: false}).toLowerCase() || 'none'
     const initialFetchDepth = parseInt(core.getInput('initial-fetch-depth', {required: false})) || 10
-    const predicateQuantifier = core.getInput('predicate-quantifier', {required: false}) || PredicateQuantifier.SOME
+    const predicateQuantifier = core.getInput('predicate-quantifier', {required: false}) || PredicateQuantifier.SOME_DENY_FIRST
 
     if (!isExportFormat(listFiles)) {
       core.setFailed(`Input parameter 'list-files' is set to invalid value '${listFiles}'`)
